@@ -17,7 +17,7 @@ extension UIResponder {
         SwiftNotice.wait(imageNames, timeInterval: timeInterval)
     }
     // api changed from v3.3
-    func noticeTop(_ text: String, autoClear: Bool = true, autoClearTime: Int = 1) {
+    func noticeTop(_ text: String, autoClear: Bool = true, autoClearTime: Int = 3) {
         SwiftNotice.noticeOnStatusBar(text, autoClear: autoClear, autoClearTime: autoClearTime)
     }
     
@@ -48,11 +48,29 @@ extension UIResponder {
     func pleaseWait() {
         SwiftNotice.wait()
     }
-    func noticeOnlyText(_ text: String) {
-        SwiftNotice.showText(text)
+    func noticeOnlyText(_ text: String,autoClear : Bool = true) {
+        SwiftNotice.showText(text, autoClear: autoClear, autoClearTime: 3)
     }
     func clearAllNotice() {
         SwiftNotice.clear()
+    }
+}
+
+fileprivate extension UIWindow {
+    
+    private struct AssociatedKeys {
+        static var NoticeType = "noticeType"
+    }
+    
+    func setNoticeType(_ type : NoticeType) {
+        objc_setAssociatedObject(self, &AssociatedKeys.NoticeType, type, objc_AssociationPolicy.OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+    }
+    
+    var noticeType : NoticeType {
+        if let type =  objc_getAssociatedObject(self, &AssociatedKeys.NoticeType) as? NoticeType {
+            return type
+        }
+        return NoticeType.other
     }
 }
 
@@ -60,6 +78,10 @@ enum NoticeType{
     case success
     case error
     case info
+    case status
+    case text
+    case wait
+    case other
 }
 
 class SwiftNotice: NSObject {
@@ -81,17 +103,51 @@ class SwiftNotice: NSObject {
     // thanks broccolii(https://github.com/broccolii) and his PR https://github.com/johnlui/SwiftNotice/pull/5
     static func clear() {
         self.cancelPreviousPerformRequests(withTarget: self)
+        clearWait()
+        windows.removeAll(keepingCapacity: false)
+    }
+    
+    static func clearWait(){
+        
         if let _ = timer {
             timer.cancel()
             timer = nil
             timerTimes = 0
         }
-        windows.removeAll(keepingCapacity: false)
+        
+        if let index = windows.index(where: { (item) -> Bool in
+            return item.noticeType == NoticeType.wait
+        }){
+            windows.remove(at: index)
+        }
     }
     
     static func noticeOnStatusBar(_ text: String, autoClear: Bool, autoClearTime: Int) {
+        
+        if let window = getWindow(NoticeType.status) {
+            if let view = window.subviews.first {
+                if let label = view.subviews.first as? UILabel {
+                    label.text = text
+                }
+                
+                let selector = #selector(SwiftNotice.hideNotice(_:))
+                self.cancelPreviousPerformRequests(withTarget: self, selector: selector, object: window)
+                view.layer.removeAllAnimations();
+                
+                UIView.animate(withDuration: 0.1, animations: {
+                    view.frame = CGRect(origin: CGPoint.zero, size: view.frame.size)
+                })
+                
+                if autoClear {
+                    self.perform(selector, with: window, afterDelay: TimeInterval(autoClearTime))
+                }
+            }
+            return
+        }
+        
         let frame = UIApplication.shared.statusBarFrame
         let window = UIWindow()
+        window.setNoticeType(NoticeType.status)
         window.backgroundColor = UIColor.clear
         let view = UIView()
         view.backgroundColor = UIColor(red: 0x6a/0x100, green: 0xb4/0x100, blue: 0x9f/0x100, alpha: 1)
@@ -125,26 +181,28 @@ class SwiftNotice: NSObject {
         window.isHidden = false
         window.addSubview(view)
         windows.append(window)
-      
+        
         var origPoint = view.frame.origin
         origPoint.y = -(view.frame.size.height)
         let destPoint = view.frame.origin
         view.tag = sn_topBar
-      
+        
         view.frame = CGRect(origin: origPoint, size: view.frame.size)
         UIView.animate(withDuration: 0.3, animations: {
-          view.frame = CGRect(origin: destPoint, size: view.frame.size)
-        }, completion: { b in
-          if autoClear {
-              let selector = #selector(SwiftNotice.hideNotice(_:))
-              self.perform(selector, with: window, afterDelay: TimeInterval(autoClearTime))
-          }
+            view.frame = CGRect(origin: destPoint, size: view.frame.size)
+            }, completion: { b in
+                if autoClear {
+                    let selector = #selector(SwiftNotice.hideNotice(_:))
+                    self.perform(selector, with: window, afterDelay: TimeInterval(autoClearTime))
+                }
         })
-      
     }
     static func wait(_ imageNames: Array<UIImage> = Array<UIImage>(), timeInterval: Int = 0) {
+        
+        clearWait()
         let frame = CGRect(x: 0, y: 0, width: 78, height: 78)
         let window = UIWindow()
+        window.setNoticeType(.wait)
         window.backgroundColor = UIColor.clear
         let mainView = UIView()
         mainView.layer.cornerRadius = 12
@@ -188,14 +246,44 @@ class SwiftNotice: NSObject {
         window.isHidden = false
         window.addSubview(mainView)
         windows.append(window)
-      
+        
         mainView.alpha = 0.0
         UIView.animate(withDuration: 0.2, animations: {
-          mainView.alpha = 1
+            mainView.alpha = 1
         })
     }
-    static func showText(_ text: String) {
+    static func showText(_ text: String,autoClear: Bool, autoClearTime: Int) {
+        
+        if let window = getWindow(NoticeType.text) {
+            if let view = window.subviews.first {
+                if let label = view.subviews.first as? UILabel {
+                    label.text = text
+                    label.sizeToFit()
+                    
+                    let superFrame = CGRect(x: 0, y: 0, width: label.frame.width + 50 , height: label.frame.height + 30)
+                    window.frame = superFrame
+                    view.frame = superFrame
+                    label.center = view.center
+                    window.center = rv!.center
+                }
+                
+                let selector = #selector(SwiftNotice.hideNotice(_:))
+                self.cancelPreviousPerformRequests(withTarget: self, selector: selector, object: window)
+                view.layer.removeAllAnimations();
+                
+                UIView.animate(withDuration: 0.1, animations: {
+                    window.alpha = 1
+                })
+                
+                if autoClear {
+                    self.perform(selector, with: window, afterDelay: TimeInterval(autoClearTime))
+                }
+            }
+            return
+        }
+        
         let window = UIWindow()
+        window.setNoticeType(.text)
         window.backgroundColor = UIColor.clear
         let mainView = UIView()
         mainView.layer.cornerRadius = 12
@@ -203,7 +291,7 @@ class SwiftNotice: NSObject {
         
         let label = UILabel()
         label.text = text
-        label.numberOfLines = 0
+        label.numberOfLines = 1
         label.font = UIFont.systemFont(ofSize: 13)
         label.textAlignment = NSTextAlignment.center
         label.textColor = UIColor.white
@@ -229,30 +317,59 @@ class SwiftNotice: NSObject {
         window.isHidden = false
         window.addSubview(mainView)
         windows.append(window)
+        
+        if autoClear {
+            let selector = #selector(SwiftNotice.hideNotice(_:))
+            self.perform(selector, with: window, afterDelay: TimeInterval(autoClearTime))
+        }
     }
     
     static func showNoticeWithText(_ type: NoticeType,text: String, autoClear: Bool, autoClearTime: Int) {
+        
+        var preWindow = getWindow(.success)
+        if preWindow == nil { preWindow = getWindow(.error) }
+        if preWindow == nil { preWindow = getWindow(.info) }
+        
+        if preWindow != nil {
+            if let view = preWindow!.subviews.first {
+                if let iv = view.viewWithTag(1000) as? UIImageView {
+                    iv.image = SwiftNoticeSDK.getImage(type)
+                }
+                
+                if let label = view.viewWithTag(1001) as? UILabel {
+                    label.text = text
+                }
+                
+                let selector = #selector(SwiftNotice.hideNotice(_:))
+                self.cancelPreviousPerformRequests(withTarget: self, selector: selector, object: preWindow)
+                view.layer.removeAllAnimations();
+                
+                UIView.animate(withDuration: 0.1, animations: {
+                    view.alpha = 1
+                })
+                
+                if autoClear {
+                    self.perform(selector, with: preWindow, afterDelay: TimeInterval(autoClearTime))
+                }
+            }
+            
+            return
+        }
+        
         let frame = CGRect(x: 0, y: 0, width: 90, height: 90)
         let window = UIWindow()
+        window.setNoticeType(type)
         window.backgroundColor = UIColor.clear
         let mainView = UIView()
         mainView.layer.cornerRadius = 10
         mainView.backgroundColor = UIColor(red:0, green:0, blue:0, alpha: 0.7)
-        
-        var image = UIImage()
-        switch type {
-        case .success:
-            image = SwiftNoticeSDK.imageOfCheckmark
-        case .error:
-            image = SwiftNoticeSDK.imageOfCross
-        case .info:
-            image = SwiftNoticeSDK.imageOfInfo
-        }
-        let checkmarkView = UIImageView(image: image)
+        let checkmarkView = UIImageView(image: SwiftNoticeSDK.getImage(type))
         checkmarkView.frame = CGRect(x: 27, y: 15, width: 36, height: 36)
+        checkmarkView.tag = 1000
         mainView.addSubview(checkmarkView)
         
         let label = UILabel(frame: CGRect(x: 0, y: 60, width: 90, height: 16))
+        label.tag = 1001
         label.font = UIFont.systemFont(ofSize: 13)
         label.textColor = UIColor.white
         label.text = text
@@ -276,39 +393,39 @@ class SwiftNotice: NSObject {
         window.isHidden = false
         window.addSubview(mainView)
         windows.append(window)
-      
+        
         mainView.alpha = 0.0
         UIView.animate(withDuration: 0.2, animations: {
-          mainView.alpha = 1
+            mainView.alpha = 1
         })
-      
+        
         if autoClear {
             let selector = #selector(SwiftNotice.hideNotice(_:))
             self.perform(selector, with: window, afterDelay: TimeInterval(autoClearTime))
         }
     }
-  
+    
     // fix https://github.com/johnlui/SwiftNotice/issues/2
     static func hideNotice(_ sender: AnyObject) {
         if let window = sender as? UIWindow {
-          
-          if let v = window.subviews.first {
-            UIView.animate(withDuration: 0.2, animations: {
-              
-              if v.tag == sn_topBar {
-                v.frame = CGRect(x: 0, y: -v.frame.height, width: v.frame.width, height: v.frame.height)
-              }
-              v.alpha = 0
-            }, completion: { b in
-              
-              if let index = windows.index(where: { (item) -> Bool in
-                  return item == window
-              }) {
-                  windows.remove(at: index)
-              }
-            })
-          }
-          
+            
+            if let v = window.subviews.first {
+                UIView.animate(withDuration: 0.2, animations: {
+                    
+                    if v.tag == sn_topBar {
+                        v.frame = CGRect(x: 0, y: -v.frame.height, width: v.frame.width, height: v.frame.height)
+                    }
+                    v.alpha = 0
+                    }, completion: { b in
+                        
+                        if let index = windows.index(where: { (item) -> Bool in
+                            return item == window
+                        }) {
+                            windows.remove(at: index)
+                        }
+                })
+            }
+            
         }
     }
     
@@ -319,6 +436,15 @@ class SwiftNotice: NSObject {
         } else {
             return rv!.center
         }
+    }
+    
+    static func getWindow(_ type : NoticeType)->UIWindow? {
+        if let index = windows.index(where: { (item) -> Bool in
+            return item.noticeType == type
+        }){
+            return windows[index]
+        }
+        return nil
     }
 }
 
@@ -366,11 +492,23 @@ class SwiftNoticeSDK {
             
             UIColor.white.setFill()
             checkmarkShapePath.fill()
+        default : ()
         }
         
         UIColor.white.setStroke()
         checkmarkShapePath.stroke()
     }
+    
+    
+    class func getImage(_ type : NoticeType) -> UIImage {
+        switch type {
+        case .success: return imageOfCheckmark
+        case .error: return imageOfCross
+        case .info: return imageOfInfo
+        default: return UIImage()
+        }
+    }
+    
     class var imageOfCheckmark: UIImage {
         if (Cache.imageOfCheckmark != nil) {
             return Cache.imageOfCheckmark!
